@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixelflut Pico Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        canvas {
+            border: 1px solid black;
+            cursor: crosshair;
+        }
+        #controls {
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Pixelflut Interface</h1>
+    <canvas id="ledCanvas" width="384" height="384"></canvas>
+    <div id="controls">
+        <label for="colorPicker">Choose Color: </label>
+        <input type="color" id="colorPicker" value="#ff0000">
+    </div>
+
+    <script>
+        const canvas = document.getElementById('ledCanvas');
+        const ctx = canvas.getContext('2d');
+        const colorPicker = document.getElementById('colorPicker');
+        const gridSize = 128;
+        const cellSize = 3; // Each cell is 3x3 pixels
+
+        let isDrawing = false;
+
+        // Draw the grid initially
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    ctx.fillStyle = "#000"; // Default to black
+                    ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                }
+            }
+        }
+
+        // Update pixel on the server with retry mechanism
+        function setPixel(x, y, color, retries = 3) {
+            const colorHex = color.replace('#', '');
+            fetch(`/px?x=${x}&y=${y}&color=${colorHex}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.text();
+                })
+                .then(data => console.log(data))
+                .catch(error => {
+                    console.error('Error:', error);
+                    if (retries > 0) {
+                        setTimeout(() => setPixel(x, y, color, retries - 1), 100);
+                    }
+                });
+        }
+
+        // Handle drawing on the canvas
+        function drawOnCanvas(x, y) {
+            // Get the selected color
+            const color = colorPicker.value;
+
+            // Set the pixel on the server
+            setPixel(x, y, color);
+
+            // Update the canvas immediately
+            ctx.fillStyle = color;
+            ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        }
+
+        // Event listeners for mouse interactions
+        canvas.addEventListener('mousedown', (event) => {
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            const x = Math.floor(mouseX / cellSize);
+            const y = Math.floor(mouseY / cellSize);
+            drawOnCanvas(x, y);
+        });
+
+        canvas.addEventListener('mousemove', (event) => {
+            if (isDrawing) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = event.clientX - rect.left;
+                const mouseY = event.clientY - rect.top;
+                const x = Math.floor(mouseX / cellSize);
+                const y = Math.floor(mouseY / cellSize);
+                drawOnCanvas(x, y);
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDrawing = false;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isDrawing = false;
+        });
+
+        // Initialize the canvas with the grid
+        drawGrid();
+    </script>
+</body>
+</html>
