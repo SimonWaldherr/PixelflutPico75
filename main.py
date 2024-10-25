@@ -8,6 +8,10 @@ import micropython
 import json
 import uasyncio as asyncio
 
+# overclocking if necessary 
+if machine.freq() != 240000000:
+    machine.freq(240000000)
+
 # Constants for the physical display
 HEIGHT = 128
 WIDTH = 128
