@@ -5,8 +5,10 @@ This project implements a Pixelflut server on a Raspberry Pi Pico (RP2040) with 
 ## Features
 
 - **TCP Pixelflut Mode**: Supports classic Pixelflut commands (`PX x y RRGGBB`) over TCP.
+- **UDP Pixelflut Mode**: Supports fast Pixelflut commands (`PX x y RRGGBB`) over UDP.
 - **HTTP Mode**: Allows setting pixels using HTTP GET requests for easy integration with web clients.
 - **Minimalistic Web Interface**: A simple HTML interface to interact with the LED matrix directly from a web browser.
+- **Token Authentication**: Secures web interface and HTTP API endpoints via `auth` token.
 - **WiFi/Access Point Setup**: Connect the Pico to an existing WiFi network or set it up as an Access Point (AP).
 
 ## Hardware Requirements
@@ -25,6 +27,9 @@ This project implements a Pixelflut server on a Raspberry Pi Pico (RP2040) with 
 3. **Upload the HTML file** (`index.html`) to the Pico’s filesystem for the web interface.
 4. **Configure WiFi credentials**:
    - Update the SSID and PASSWORD in the `main.py` file to match your WiFi network. Alternatively, the server can run in Access Point mode if no WiFi network is configured.
+5. **(Optional) Configure auth token**:
+   - Create `auth_token.txt` on the Pico filesystem with a custom token.
+   - If the file is missing, a device-derived token is used and printed on serial output during startup.
 
 ## Running the Server
 
@@ -49,22 +54,30 @@ This project implements a Pixelflut server on a Raspberry Pi Pico (RP2040) with 
   $ echo -e "PX 10 20 FF0000\n" | nc <Pico_IP> 1234
   ```
 
+### UDP Pixelflut Mode
+
+- The server listens for Pixelflut commands on UDP port `1235`.
+- Example command:
+  ```
+  $ echo -n "PX 10 20 FF0000" | nc -u <Pico_IP> 1235
+  ```
+
 ### HTTP Mode
 
 - The server listens on HTTP port `8080`.
 - Set a pixel using a GET request:
   ```
-  GET /px?x=<x>&y=<y>&color=<RRGGBB>
+  GET /px?x=<x>&y=<y>&color=<RRGGBB>&auth=<TOKEN>
   ```
   Example:
   ```
-  GET /px?x=10&y=20&color=FF0000
+  GET /px?x=10&y=20&color=FF0000&auth=<TOKEN>
   ```
 
 ### Web Interface
 
 - Open the `index.html` file in your browser:
-  - You can click on the canvas to set pixels.
+  - Open `http://<Pico_IP>:8080/?auth=<TOKEN>` and click on the canvas to set pixels.
   
 ## Known Issues
 
@@ -73,9 +86,9 @@ This project implements a Pixelflut server on a Raspberry Pi Pico (RP2040) with 
 
 ## Future Improvements
 
-- Implement **UDP support** for Pixelflut for faster pixel setting.
-- Add **authentication** for the web interface and API endpoints for secure access.
-- Improve **performance optimizations** for the server to handle more requests efficiently.
+- Add configurable credentials and token rotation instead of a fixed auth token in code.
+- Add optional HTTPS/TLS termination in front of the HTTP interface.
+- Add profiling metrics for request throughput and frame update latency.
 
 ## Contributing
 

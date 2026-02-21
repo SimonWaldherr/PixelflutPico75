@@ -2,6 +2,7 @@ import network
 import socket
 import gc
 import hub75
+import machine
 from machine import Pin
 import time
 import micropython
@@ -17,6 +18,11 @@ HEIGHT = 128
 WIDTH = 128
 HTTP_PORT = 8080  # Port for HTTP
 TCP_PORT = 1234  # Port for Pixelflut
+UDP_PORT = 1235  # Port for UDP Pixelflut
+AUTH_TOKEN = "".join("{:02x}".format(byte) for byte in machine.unique_id())
+AUTH_TOKEN_SOURCE = "device"
+BUFFER_SIZE = 512
+GC_INTERVAL = 50
 
 # Initialize the display with the actual hardware resolution
 xHEIGHT = 32    # Height of the physical LED matrix
@@ -25,6 +31,16 @@ display = hub75.Hub75(xWIDTH, xHEIGHT)
 
 # Create a 128x128 grid to store pixel states
 grid = [[(0, 0, 0) for _ in range(WIDTH)] for _ in range(HEIGHT)]
+request_count = 0
+
+try:
+    with open("auth_token.txt", "r") as token_file:
+        token = token_file.read().strip()
+        if token:
+            AUTH_TOKEN = token
+            AUTH_TOKEN_SOURCE = "auth_token.txt"
+except OSError:
+    pass
 
 @micropython.native
 def remap_pixel(x, y):
@@ -54,10 +70,29 @@ def remap_pixel(x, y):
 @micropython.native
 def draw_pixel(x, y, r, g, b):
     """Draw a pixel on the LED matrix at the given coordinates with mapping applied."""
+    if not (0 <= x < WIDTH and 0 <= y < HEIGHT):
+        return
+    if grid[y][x] == (r, g, b):
+        return
     x1, y1 = remap_pixel(x, y)
     if 0 <= x1 < xWIDTH and 0 <= y1 < xHEIGHT:
         display.set_pixel(x1, y1, r, g, b)
     grid[y][x] = (r, g, b)
+
+def maybe_gc_collect():
+    global request_count
+    request_count += 1
+    if request_count >= GC_INTERVAL:
+        gc.collect()
+        request_count = 0
+
+def auth_tokens_match(expected, actual):
+    if not expected or not actual or len(expected) != len(actual):
+        return False
+    diff = 0
+    for i in range(len(expected)):
+        diff |= ord(expected[i]) ^ ord(actual[i])
+    return diff == 0
 
 def parse_http_pixel_data(data):
     """
@@ -77,6 +112,14 @@ def parse_http_pixel_data(data):
         return None
     except (IndexError, ValueError):
         return None
+
+def get_request_path(data):
+    try:
+        if isinstance(data, bytes):
+            data = data.decode()
+        return data.split("\r\n", 1)[0].split(" ")[1]
+    except (IndexError, UnicodeError):
+        return "/"
 
 def parse_pixelflut_command(data):
     try:
@@ -101,7 +144,7 @@ def parse_pixelflut_command(data):
 
 async def handle_tcp_client(reader, writer):
     try:
-        data = await reader.read(512)
+        data = await reader.read(BUFFER_SIZE)
         if not data:
             return
 
@@ -110,7 +153,7 @@ async def handle_tcp_client(reader, writer):
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        gc.collect()
+        maybe_gc_collect()
     except Exception as e:
         print('TCP client error:', e)
 
@@ -123,17 +166,58 @@ async def tcp_pixelflut_server():
         # AttributeError: 'Server' object has no attribute 'serve_forever'
         await asyncio.sleep(3600)
 
+async def udp_pixelflut_server(ip):
+    print('UDP Pixelflut server listening on port', UDP_PORT)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    sock.bind((ip, UDP_PORT))
+    while True:
+        try:
+            data, addr = sock.recvfrom(BUFFER_SIZE)
+            response = parse_pixelflut_command(data)
+            if response and response != b'OK':
+                sock.sendto(response, addr)
+            maybe_gc_collect()
+        except OSError:
+            await asyncio.sleep_ms(5)
+
+def extract_auth_token(data):
+    try:
+        request_text = data.decode()
+        request = request_text.split("\r\n")
+        path = get_request_path(request_text)
+        if "?auth=" in path:
+            return path.split("?auth=")[1].split("&")[0]
+        if "&auth=" in path:
+            return path.split("&auth=")[1].split("&")[0]
+        for header in request[1:]:
+            if header.startswith("Authorization: Bearer "):
+                return header.split("Authorization: Bearer ", 1)[1].strip()
+    except (IndexError, UnicodeError):
+        pass
+    return None
+
 async def handle_http_client(reader, writer):
     try:
-        data = await reader.read(512)
+        data = await reader.read(BUFFER_SIZE)
         if not data:
             return
 
-        if b"GET /" in data and not b"GET /px" in data:
+        if not auth_tokens_match(AUTH_TOKEN, extract_auth_token(data)):
+            writer.write(b'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm="pixelflut"\r\nContent-Type: text/plain\r\n\r\nUnauthorized')
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            return
+
+        path = get_request_path(data)
+        if path == "/" or path.startswith("/?"):
             with open('index.html', 'r') as f:
                 html = f.read()
             response = b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' + html.encode()
             writer.write(response)
+        elif not path.startswith("/px?"):
+            writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot Found')
         else:
             pixel_data = parse_http_pixel_data(data)
             if pixel_data:
@@ -147,7 +231,7 @@ async def handle_http_client(reader, writer):
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        gc.collect()
+        maybe_gc_collect()
     except Exception as e:
         print('HTTP client error:', e)
 
@@ -190,11 +274,14 @@ async def main():
         wlan = network.WLAN(network.STA_IF)
         ip = wlan.ifconfig()[0]
         print('Connected to WiFi at', ip)
+    print('HTTP auth token source:', AUTH_TOKEN_SOURCE)
+    if AUTH_TOKEN_SOURCE != "auth_token.txt":
+        print('HTTP auth token:', AUTH_TOKEN)
 
     display.start()
 
     # Start both servers concurrently
-    await asyncio.gather(tcp_pixelflut_server(), http_pixelflut_server(ip))
+    await asyncio.gather(tcp_pixelflut_server(), udp_pixelflut_server(ip), http_pixelflut_server(ip))
 
 if __name__ == "__main__":
     try:

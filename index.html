@@ -32,6 +32,7 @@
         const canvas = document.getElementById('ledCanvas');
         const ctx = canvas.getContext('2d');
         const colorPicker = document.getElementById('colorPicker');
+        const authToken = new URLSearchParams(window.location.search).get('auth') || '';
         const gridSize = 128;
         const cellSize = 3; // Each cell is 3x3 pixels
 
@@ -51,7 +52,7 @@
         // Update pixel on the server with retry mechanism
         function setPixel(x, y, color, retries = 3) {
             const colorHex = color.replace('#', '');
-            fetch(`/px?x=${x}&y=${y}&color=${colorHex}`)
+            fetch(`/px?x=${x}&y=${y}&color=${colorHex}&auth=${encodeURIComponent(authToken)}`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error('Network response was not ok');
