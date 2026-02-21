@@ -19,7 +19,8 @@ WIDTH = 128
 HTTP_PORT = 8080  # Port for HTTP
 TCP_PORT = 1234  # Port for Pixelflut
 UDP_PORT = 1235  # Port for UDP Pixelflut
-AUTH_TOKEN = "changeme"
+AUTH_TOKEN = "".join("{:02x}".format(byte) for byte in machine.unique_id())
+AUTH_TOKEN_SOURCE = "device"
 BUFFER_SIZE = 512
 GC_INTERVAL = 50
 
@@ -34,7 +35,10 @@ request_count = 0
 
 try:
     with open("auth_token.txt", "r") as token_file:
-        AUTH_TOKEN = token_file.read().strip() or AUTH_TOKEN
+        token = token_file.read().strip()
+        if token:
+            AUTH_TOKEN = token
+            AUTH_TOKEN_SOURCE = "auth_token.txt"
 except OSError:
     pass
 
@@ -162,11 +166,11 @@ async def tcp_pixelflut_server():
         # AttributeError: 'Server' object has no attribute 'serve_forever'
         await asyncio.sleep(3600)
 
-async def udp_pixelflut_server():
+async def udp_pixelflut_server(ip):
     print('UDP Pixelflut server listening on port', UDP_PORT)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setblocking(False)
-    sock.bind(("0.0.0.0", UDP_PORT))
+    sock.bind((ip, UDP_PORT))
     while True:
         try:
             data, addr = sock.recvfrom(BUFFER_SIZE)
@@ -270,11 +274,14 @@ async def main():
         wlan = network.WLAN(network.STA_IF)
         ip = wlan.ifconfig()[0]
         print('Connected to WiFi at', ip)
+    print('HTTP auth token source:', AUTH_TOKEN_SOURCE)
+    if AUTH_TOKEN_SOURCE != "auth_token.txt":
+        print('HTTP auth token:', AUTH_TOKEN)
 
     display.start()
 
     # Start both servers concurrently
-    await asyncio.gather(tcp_pixelflut_server(), udp_pixelflut_server(), http_pixelflut_server(ip))
+    await asyncio.gather(tcp_pixelflut_server(), udp_pixelflut_server(ip), http_pixelflut_server(ip))
 
 if __name__ == "__main__":
     try:
