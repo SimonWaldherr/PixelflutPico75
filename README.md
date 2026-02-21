@@ -27,6 +27,9 @@ This project implements a Pixelflut server on a Raspberry Pi Pico (RP2040) with 
 3. **Upload the HTML file** (`index.html`) to the Pico’s filesystem for the web interface.
 4. **Configure WiFi credentials**:
    - Update the SSID and PASSWORD in the `main.py` file to match your WiFi network. Alternatively, the server can run in Access Point mode if no WiFi network is configured.
+5. **(Optional) Configure auth token**:
+   - Create `auth_token.txt` on the Pico filesystem with a custom token (default is `changeme` if the file is missing).
+   - ⚠️ Change the default token before deploying on any network you do not fully trust.
 
 ## Running the Server
 

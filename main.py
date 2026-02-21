@@ -20,6 +20,7 @@ HTTP_PORT = 8080  # Port for HTTP
 TCP_PORT = 1234  # Port for Pixelflut
 UDP_PORT = 1235  # Port for UDP Pixelflut
 AUTH_TOKEN = "changeme"
+BUFFER_SIZE = 512
 GC_INTERVAL = 50
 
 # Initialize the display with the actual hardware resolution
@@ -30,6 +31,12 @@ display = hub75.Hub75(xWIDTH, xHEIGHT)
 # Create a 128x128 grid to store pixel states
 grid = [[(0, 0, 0) for _ in range(WIDTH)] for _ in range(HEIGHT)]
 request_count = 0
+
+try:
+    with open("auth_token.txt", "r") as token_file:
+        AUTH_TOKEN = token_file.read().strip() or AUTH_TOKEN
+except OSError:
+    pass
 
 @micropython.native
 def remap_pixel(x, y):
@@ -59,6 +66,8 @@ def remap_pixel(x, y):
 @micropython.native
 def draw_pixel(x, y, r, g, b):
     """Draw a pixel on the LED matrix at the given coordinates with mapping applied."""
+    if not (0 <= x < WIDTH and 0 <= y < HEIGHT):
+        return
     if grid[y][x] == (r, g, b):
         return
     x1, y1 = remap_pixel(x, y)
@@ -72,6 +81,14 @@ def maybe_gc_collect():
     if request_count >= GC_INTERVAL:
         gc.collect()
         request_count = 0
+
+def auth_tokens_match(expected, actual):
+    if not expected or not actual or len(expected) != len(actual):
+        return False
+    diff = 0
+    for i in range(len(expected)):
+        diff |= ord(expected[i]) ^ ord(actual[i])
+    return diff == 0
 
 def parse_http_pixel_data(data):
     """
@@ -91,6 +108,14 @@ def parse_http_pixel_data(data):
         return None
     except (IndexError, ValueError):
         return None
+
+def get_request_path(data):
+    try:
+        if isinstance(data, bytes):
+            data = data.decode()
+        return data.split("\r\n", 1)[0].split(" ")[1]
+    except (IndexError, UnicodeError):
+        return "/"
 
 def parse_pixelflut_command(data):
     try:
@@ -115,7 +140,7 @@ def parse_pixelflut_command(data):
 
 async def handle_tcp_client(reader, writer):
     try:
-        data = await reader.read(512)
+        data = await reader.read(BUFFER_SIZE)
         if not data:
             return
 
@@ -144,7 +169,7 @@ async def udp_pixelflut_server():
     sock.bind(("0.0.0.0", UDP_PORT))
     while True:
         try:
-            data, addr = sock.recvfrom(512)
+            data, addr = sock.recvfrom(BUFFER_SIZE)
             response = parse_pixelflut_command(data)
             if response and response != b'OK':
                 sock.sendto(response, addr)
@@ -154,8 +179,9 @@ async def udp_pixelflut_server():
 
 def extract_auth_token(data):
     try:
-        request = data.decode().split("\r\n")
-        path = request[0].split(" ")[1]
+        request_text = data.decode()
+        request = request_text.split("\r\n")
+        path = get_request_path(request_text)
         if "?auth=" in path:
             return path.split("?auth=")[1].split("&")[0]
         if "&auth=" in path:
@@ -169,22 +195,25 @@ def extract_auth_token(data):
 
 async def handle_http_client(reader, writer):
     try:
-        data = await reader.read(512)
+        data = await reader.read(BUFFER_SIZE)
         if not data:
             return
 
-        if extract_auth_token(data) != AUTH_TOKEN:
-            writer.write(b'HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nUnauthorized')
+        if not auth_tokens_match(AUTH_TOKEN, extract_auth_token(data)):
+            writer.write(b'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm="pixelflut"\r\nContent-Type: text/plain\r\n\r\nUnauthorized')
             await writer.drain()
             writer.close()
             await writer.wait_closed()
             return
 
-        if b"GET /" in data and not b"GET /px" in data:
+        path = get_request_path(data)
+        if path == "/" or path.startswith("/?"):
             with open('index.html', 'r') as f:
                 html = f.read()
             response = b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' + html.encode()
             writer.write(response)
+        elif not path.startswith("/px?"):
+            writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot Found')
         else:
             pixel_data = parse_http_pixel_data(data)
             if pixel_data:
