@@ -2,6 +2,7 @@ import network
 import socket
 import gc
 import hub75
+import machine
 from machine import Pin
 import time
 import micropython
@@ -17,6 +18,9 @@ HEIGHT = 128
 WIDTH = 128
 HTTP_PORT = 8080  # Port for HTTP
 TCP_PORT = 1234  # Port for Pixelflut
+UDP_PORT = 1235  # Port for UDP Pixelflut
+AUTH_TOKEN = "changeme"
+GC_INTERVAL = 50
 
 # Initialize the display with the actual hardware resolution
 xHEIGHT = 32    # Height of the physical LED matrix
@@ -25,6 +29,7 @@ display = hub75.Hub75(xWIDTH, xHEIGHT)
 
 # Create a 128x128 grid to store pixel states
 grid = [[(0, 0, 0) for _ in range(WIDTH)] for _ in range(HEIGHT)]
+request_count = 0
 
 @micropython.native
 def remap_pixel(x, y):
@@ -54,10 +59,19 @@ def remap_pixel(x, y):
 @micropython.native
 def draw_pixel(x, y, r, g, b):
     """Draw a pixel on the LED matrix at the given coordinates with mapping applied."""
+    if grid[y][x] == (r, g, b):
+        return
     x1, y1 = remap_pixel(x, y)
     if 0 <= x1 < xWIDTH and 0 <= y1 < xHEIGHT:
         display.set_pixel(x1, y1, r, g, b)
     grid[y][x] = (r, g, b)
+
+def maybe_gc_collect():
+    global request_count
+    request_count += 1
+    if request_count >= GC_INTERVAL:
+        gc.collect()
+        request_count = 0
 
 def parse_http_pixel_data(data):
     """
@@ -110,7 +124,7 @@ async def handle_tcp_client(reader, writer):
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        gc.collect()
+        maybe_gc_collect()
     except Exception as e:
         print('TCP client error:', e)
 
@@ -123,10 +137,47 @@ async def tcp_pixelflut_server():
         # AttributeError: 'Server' object has no attribute 'serve_forever'
         await asyncio.sleep(3600)
 
+async def udp_pixelflut_server():
+    print('UDP Pixelflut server listening on port', UDP_PORT)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    sock.bind(("0.0.0.0", UDP_PORT))
+    while True:
+        try:
+            data, addr = sock.recvfrom(512)
+            response = parse_pixelflut_command(data)
+            if response and response != b'OK':
+                sock.sendto(response, addr)
+            maybe_gc_collect()
+        except OSError:
+            await asyncio.sleep_ms(5)
+
+def extract_auth_token(data):
+    try:
+        request = data.decode().split("\r\n")
+        path = request[0].split(" ")[1]
+        if "?auth=" in path:
+            return path.split("?auth=")[1].split("&")[0]
+        if "&auth=" in path:
+            return path.split("&auth=")[1].split("&")[0]
+        for header in request[1:]:
+            if header.startswith("Authorization: Bearer "):
+                return header.split("Authorization: Bearer ", 1)[1].strip()
+    except (IndexError, UnicodeError):
+        pass
+    return None
+
 async def handle_http_client(reader, writer):
     try:
         data = await reader.read(512)
         if not data:
+            return
+
+        if extract_auth_token(data) != AUTH_TOKEN:
+            writer.write(b'HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nUnauthorized')
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
             return
 
         if b"GET /" in data and not b"GET /px" in data:
@@ -147,7 +198,7 @@ async def handle_http_client(reader, writer):
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        gc.collect()
+        maybe_gc_collect()
     except Exception as e:
         print('HTTP client error:', e)
 
@@ -194,7 +245,7 @@ async def main():
     display.start()
 
     # Start both servers concurrently
-    await asyncio.gather(tcp_pixelflut_server(), http_pixelflut_server(ip))
+    await asyncio.gather(tcp_pixelflut_server(), udp_pixelflut_server(), http_pixelflut_server(ip))
 
 if __name__ == "__main__":
     try:
